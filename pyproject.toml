@@ -1,0 +1,106 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nomba"
+version = "0.1.0"
+description = "Official Python SDK for the Nomba API: transfers, checkout, virtual accounts, bills and webhooks."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nomba", email = "security@nomba.com" }]
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27"]
+keywords = ["nomba", "payments", "nigeria", "fintech", "api", "sdk"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/NombaOSS/nomba-python"
+Documentation = "https://developer.nomba.com"
+Source = "https://github.com/NombaOSS/nomba-python"
+Changelog = "https://github.com/NombaOSS/nomba-python/blob/main/CHANGELOG.md"
+Issues = "https://github.com/NombaOSS/nomba-python/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "build>=1.2",
+    "twine>=5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nomba"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/nomba", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["nomba"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\.$", "raise NotImplementedError"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+files = ["src", "tests", "examples"]
+
+[[tool.mypy.overrides]]
+module = ["flask", "flask.*", "fastapi", "fastapi.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Flask/FastAPI aren't dev dependencies, so their decorators are untyped here.
+module = ["webhook_flask", "webhook_fastapi"]
+disallow_untyped_decorators = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "A", "C4", "SIM", "RUF", "PT", "PL"]
+ignore = [
+    "PLR0913",  # API methods mirror Nomba's parameters
+    "PLR2004",  # HTTP status numbers read fine inline
+    "PLR0911",
+    "PLR0917",
+    "A005",     # module named `types` is part of the public layout
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "PLR0915", "PLC0415"]
+"examples/**" = ["S105", "S106", "T201", "S104", "S311"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nomba"]

@@ -1,0 +1,135 @@
+name: Publish to PyPI
+
+# Publishes to PyPI whenever pyproject.toml's version changes on main (i.e. a
+# release PR is merged). Ordinary merges are no-ops because the version guard
+# skips versions already present on PyPI.
+#
+# Authentication uses PyPI Trusted Publishing (OIDC): no PyPI token secret is
+# required. Configure the trusted publisher on pypi.org to point at this
+# workflow file (publish.yml) and the `pypi` environment before the first
+# release lands.
+#
+# Split into two jobs so dependency code never runs where the OIDC token can be
+# minted: `build` installs and runs everything with a read-only token;
+# `publish` holds id-token/contents write, installs nothing, and uploads the
+# prebuilt distributions.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      published: ${{ steps.v.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Determine version and whether it is already published
+        id: v
+        run: |
+          NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/$NAME/$VERSION/json")
+          if [ "$STATUS" = "200" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME $VERSION already on PyPI — skipping publish."
+          elif [ "$STATUS" = "404" ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Publishing $NAME $VERSION."
+          else
+            echo "::error::Unexpected PyPI response $STATUS"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.v.outputs.published == 'false'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . --group dev
+
+      - name: Verify (lint, type-check, test)
+        if: steps.v.outputs.published == 'false'
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy
+          pytest --cov --cov-fail-under=90
+
+      - name: Build and check distributions
+        if: steps.v.outputs.published == 'false'
+        run: |
+          rm -rf dist
+          python -m build
+          twine check --strict dist/*
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install dist/*.whl
+          cd /tmp && /tmp/wheel-venv/bin/python -c "import nomba; print(nomba.__version__)"
+
+      - name: Upload distributions
+        if: steps.v.outputs.published == 'false'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1
+
+  publish:
+    needs: build
+    # Only when there is a new version, so ordinary merges don't wait for approval.
+    if: needs.build.outputs.published == 'false'
+    # Requires a maintainer's approval in GitHub before this job (and its OIDC
+    # token) runs, so a stolen GitHub login can't publish to PyPI on its own.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/nomba/
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release tag + GitHub Release
+      id-token: write # OIDC token for PyPI Trusted Publishing
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      # Uploads the prebuilt files only; nothing is built or installed here.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+      # Idempotent: creates the tag and Release only if missing, so re-running
+      # this job after a partial failure (published, but no Release) repairs it.
+      - name: Ensure release tag and GitHub Release exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          # --target creates the tag at this commit through the API if it doesn't
+          # exist yet; an existing tag is used as it is.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --target "$GITHUB_SHA" \
+              --title "$TAG" \
+              --notes "See [CHANGELOG.md](https://github.com/${REPO}/blob/main/CHANGELOG.md) for details."
+          fi

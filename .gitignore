@@ -1,0 +1,25 @@
+# virtualenvs
+.venv/
+venv/
+
+# build output
+dist/
+build/
+*.egg-info/
+
+# caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# local
+.env
+.DS_Store
