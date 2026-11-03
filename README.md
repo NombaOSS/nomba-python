@@ -49,7 +49,7 @@ Both clients work as context managers; otherwise call `close()` (sync) or `await
 | `account_id` | env `NOMBA_ACCOUNT_ID` | Required. Your parent account ID, sent as the `accountId` header on every request. |
 | `environment` | env `NOMBA_ENVIRONMENT`, else `"sandbox"` | `"sandbox"` (`https://sandbox.nomba.com`) or `"production"` (`https://api.nomba.com`). Anything else is rejected. |
 | `base_url` | from `environment` | Override for proxies or tests. Must be `https://` unless the host is `localhost` or `127.0.0.1`. |
-| `timeout` | `30` | Seconds, per request. |
+| `timeout` | `30` | Seconds. The total time one attempt may take, from connecting to reading the last byte of the body. |
 | `max_retries` | `2` | Automatic retries for GET requests and token calls. See [Retries](#retries-and-idempotency). |
 | `token_store` | in-memory | Where the access token is cached. See [Token store](#token-store). |
 | `http_client` | a new `httpx.Client` / `httpx.AsyncClient` | Bring your own for proxies, custom TLS or connection limits. The SDK won't close a client you pass in. |
@@ -219,7 +219,7 @@ All errors inherit from `nomba.NombaError`.
 | `APITimeoutError` | Timeout (a subclass of `APIConnectionError`). |
 | `WebhookVerificationError` | See [Webhooks](#webhooks). |
 
-`ApiError` carries `http_status`, `code`, `description` (Nomba's message), `body` (parsed response), `method` and `path`:
+`ApiError` carries `http_status`, `code`, `description` (Nomba's message), `body` (parsed response), `method` and `path`. Every error from a money-moving call also carries `reference` (see [Retries and idempotency](#retries-and-idempotency)):
 
 ```python
 from nomba import ApiError, RateLimitError
@@ -242,10 +242,21 @@ POST, PUT and DELETE are **never** retried automatically. A timeout or a 502 doe
 
 For money-moving calls (`transfers.to_bank`, `transfers.to_wallet`, every `bills` purchase), the SDK sends a `merchantTxRef`. Pass your own, store it before you call, and reuse it if you retry: Nomba uses it to reject duplicates. If you leave it out, the SDK generates a random UUID v4 and returns it in the result as `result["merchantTxRef"]`. `checkout.charge_saved_card` has no `merchantTxRef`; its idempotency key is `order.orderReference`, which the SDK generates the same way and returns as `result["orderReference"]`.
 
-If a money-moving call fails with `APIConnectionError` or `ServerError`, don't send a new request with a new reference. Look the original up first:
+Every error raised by a money-moving call has `err.reference`, a `Reference` with `field` (`"merchantTxRef"`, or `"orderReference"` for saved-card charges) and `value` (yours or the generated one), so you never lose it. Other calls leave it `None`.
+
+On `APITimeoutError`, `APIConnectionError` or `ServerError` the outcome is unknown. Don't send a new request with a new reference. Requery with `err.reference.value` first, and if Nomba has no record of it, retry with the **same** reference:
 
 ```python
-nomba.transactions.get(merchant_tx_ref="payout-1042")
+from nomba import APIConnectionError, NotFoundError, ServerError
+
+try:
+    result = nomba.transfers.to_bank(params)
+except (APIConnectionError, ServerError) as err:  # APITimeoutError is an APIConnectionError
+    ref = err.reference
+    try:
+        result = nomba.transactions.get(merchant_tx_ref=ref.value)
+    except NotFoundError:
+        result = nomba.transfers.to_bank({**params, ref.field: ref.value})
 ```
 
 See [examples/transfer_with_requery.py](examples/transfer_with_requery.py).
@@ -307,7 +318,7 @@ def nomba_webhook():
 
 **Pass the raw request body** (`request.get_data()` in Flask, `await request.body()` in FastAPI), as bytes or str. Don't parse it and re-encode it.
 
-The signature is a base64 HMAC-SHA256 of fields from the body and the `nomba-timestamp` header, keyed with the signing key from your Nomba dashboard. The SDK reads `nomba-signature` (or `nomba-sig-value`) and `nomba-timestamp` case-insensitively, rejects any `nomba-signature-algorithm` other than `HmacSHA256`, and compares in constant time, ignoring letter case (as Nomba's reference code does).
+The signature is a base64 HMAC-SHA256 of fields from the body and the `nomba-timestamp` header, keyed with the signing key from your Nomba dashboard. The SDK reads `nomba-signature` (or `nomba-sig-value`) and `nomba-timestamp` case-insensitively, rejects any `nomba-signature-algorithm` other than `HmacSHA256`, and compares the signature exactly, in constant time. Base64 is case-sensitive, so a signature that differs only in letter case is rejected.
 
 `tolerance_seconds` (off by default) rejects webhooks whose timestamp is further than that from now, which limits replays. Nomba retries failed deliveries, so make your handler idempotent on `event["requestId"]` either way.
 

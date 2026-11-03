@@ -9,8 +9,9 @@
 - Automatic access tokens: issued on first use, refreshed before expiry, shared between concurrent calls, retried once on a 401. Pluggable token store.
 - Error classes for each HTTP status, plus connection and timeout errors.
 - Automatic retries for GET requests and token calls only.
-- Generated `merchantTxRef` (and `orderReference` for saved-card charges) when you don't pass one, returned in the result.
+- `timeout` bounds the whole attempt, including reading the response body, not just each connection phase.
+- Generated `merchantTxRef` (and `orderReference` for saved-card charges) when you don't pass one, returned in the result and attached to any error the call raises as `err.reference`.
 - Path parameter validation and encoding.
 - Cursor pagination helpers (`*_all`).
-- Webhook signature verification, usable without a client (`nomba.webhooks.verify_signature`), with optional timestamp tolerance.
+- Webhook signature verification with an exact constant-time compare, usable without a client (`nomba.webhooks.verify_signature`), with optional timestamp tolerance.
 - `TypedDict` types for params and responses; `TransactionStatus` and `WebhookEventType` enums.

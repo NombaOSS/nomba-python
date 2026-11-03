@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .._core import Request, add_reference, path, require, with_reference
+from .._core import Request, path, require, with_reference
 from ..types.transfers import Bank, BankAccountLookup, BankTransferParams, Transfer, WalletTransferParams
 from ._base import AsyncResource, SyncResource
 
@@ -18,13 +18,13 @@ def _lookup_account(account_number: str, bank_code: str) -> Request[BankAccountL
 def _to_bank(params: BankTransferParams, sub_account_id: str | None) -> Request[Transfer]:
     body, ref = with_reference(params)
     p = "/v2/transfers/bank" if sub_account_id is None else path("/v2/transfers/bank/{}", sub_account_id)
-    return Request("POST", p, body=body, postprocess=add_reference("merchantTxRef", ref))
+    return Request("POST", p, body=body, reference=ref)
 
 
 def _to_wallet(params: WalletTransferParams, sub_account_id: str | None) -> Request[Transfer]:
     body, ref = with_reference(params)
     p = "/v2/transfers/wallet" if sub_account_id is None else path("/v2/transfers/wallet/{}", sub_account_id)
-    return Request("POST", p, body=body, postprocess=add_reference("merchantTxRef", ref))
+    return Request("POST", p, body=body, reference=ref)
 
 
 class Transfers(SyncResource):

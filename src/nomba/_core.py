@@ -14,7 +14,7 @@ import platform
 import random
 import uuid
 from collections.abc import Callable, Generator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Generic, TypeVar
@@ -29,9 +29,11 @@ from .errors import (
     ApiError,
     APITimeoutError,
     AuthenticationError,
+    NombaError,
     NotFoundError,
     PermissionDeniedError,
     RateLimitError,
+    Reference,
     ServerError,
     ValidationError,
 )
@@ -60,7 +62,9 @@ class Request(Generic[T]):
     path: str
     query: Mapping[str, Any] | None = None
     body: Any = None
-    postprocess: Callable[[Any], Any] | None = field(default=None, compare=False)
+    reference: Reference | None = None
+    """Idempotency reference of a money-moving call: added to the returned
+    data if missing, and attached to any error the call raises."""
     retry_on_401: bool = True
 
     @property
@@ -125,25 +129,20 @@ def new_reference() -> str:
     return str(uuid.uuid4())
 
 
-def with_reference(params: Mapping[str, Any], key: str = "merchantTxRef") -> tuple[dict[str, Any], str]:
+def with_reference(params: Mapping[str, Any], key: str = "merchantTxRef") -> tuple[dict[str, Any], Reference]:
     """Copy ``params`` and make sure ``key`` holds a reference, generating one if needed."""
     body = dict(params)
     ref = body.get(key)
     if not isinstance(ref, str) or not ref:
         ref = new_reference()
         body[key] = ref
-    return body, ref
+    return body, Reference(key, ref)
 
 
-def add_reference(key: str, ref: str) -> Callable[[Any], Any]:
-    """Postprocessor: put ``ref`` into the returned data dict if Nomba left it out."""
-
-    def apply(data: Any) -> Any:
-        if isinstance(data, dict) and not data.get(key):
-            data[key] = ref
-        return data
-
-    return apply
+def _add_reference(data: Any, reference: Reference) -> Any:
+    if isinstance(data, dict) and not data.get(reference.field):
+        data[reference.field] = reference.value
+    return data
 
 
 # --------------------------------------------------------------------------- actions
@@ -151,7 +150,10 @@ def add_reference(key: str, ref: str) -> Callable[[Any], Any]:
 
 @dataclass(frozen=True)
 class Send:
+    """Send ``request`` and read the whole body within ``total_timeout`` seconds."""
+
     request: httpx.Request
+    total_timeout: float
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,32 @@ def build_http_request(req: Request[Any], config: Config, access_token: str | No
     )
 
 
+class TotalTimeout(httpx.ReadTimeout):
+    """The whole attempt (connect, headers and body) took longer than ``timeout``."""
+
+
+def check_deadline(now: float, deadline: float, request: httpx.Request) -> None:
+    """Raise :class:`TotalTimeout` once ``now`` is past ``deadline``.
+
+    httpx timeouts apply per phase (connect, each read, ...), so a server
+    trickling bytes could keep a request alive far beyond ``timeout``. The
+    drivers read the body in chunks and call this between them.
+    """
+    if now > deadline:
+        raise TotalTimeout("total request timeout exceeded", request=request)
+
+
+def buffered(response: httpx.Response, raw: bytes) -> httpx.Response:
+    """A fully read copy of a streamed ``response`` built from its raw (undecoded) bytes."""
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        content=raw,
+        request=response.request,
+        extensions=response.extensions,
+    )
+
+
 def _is_retryable_status(status: int) -> bool:
     return status == 429 or status >= 500
 
@@ -235,7 +263,7 @@ def backoff_seconds(attempt: int, response: httpx.Response | None = None) -> flo
 
 
 def transport_flow(
-    request: httpx.Request, method: str, api_path: str, retryable: bool, max_retries: int
+    request: httpx.Request, method: str, api_path: str, retryable: bool, config: Config
 ) -> Flow[httpx.Response]:
     """Send ``request``, retrying network errors, 429 and 5xx when ``retryable``."""
     attempt = 0
@@ -243,7 +271,7 @@ def transport_flow(
         response: httpx.Response | None = None
         error: APIConnectionError | None = None
         try:
-            response = yield Send(request)
+            response = yield Send(request, config.timeout)
         except httpx.TimeoutException as exc:
             error = APITimeoutError(f"Request to Nomba timed out [{method} {api_path}]", method=method, path=api_path)
             error.__cause__ = exc
@@ -256,7 +284,7 @@ def transport_flow(
             error.__cause__ = exc
         if response is not None and not _is_retryable_status(response.status_code):
             return response
-        if not retryable or attempt >= max_retries:
+        if not retryable or attempt >= config.max_retries:
             if error is not None:
                 raise error
             if response is not None:
@@ -351,10 +379,23 @@ def parse_response(response: httpx.Response, method: str, api_path: str) -> Any:
 
 def api_flow(req: Request[T], config: Config) -> Flow[T]:
     """An authenticated API call: token, send (with retries), 401 refresh-once, unwrap."""
+    try:
+        data = yield from _api_call(req, config)
+    except NombaError as exc:
+        # The caller needs the reference to requery before retrying, above all
+        # when the outcome is unknown (timeout, connection error, 5xx).
+        if req.reference is not None:
+            exc.reference = req.reference
+        raise
+    if req.reference is not None:
+        data = _add_reference(data, req.reference)
+    return data  # type: ignore[no-any-return]
 
+
+def _api_call(req: Request[Any], config: Config) -> Flow[Any]:
     def send(token: str) -> Flow[httpx.Response]:
         http_request = build_http_request(req, config, token)
-        return transport_flow(http_request, req.method, req.path, req.retryable, config.max_retries)
+        return transport_flow(http_request, req.method, req.path, req.retryable, config)
 
     token: str = yield AccessToken(None)
     response = yield from send(token)
@@ -363,10 +404,7 @@ def api_flow(req: Request[T], config: Config) -> Flow[T]:
         # fresh token is safe even for POST.
         token = yield AccessToken(token)
         response = yield from send(token)
-    data = parse_response(response, req.method, req.path)
-    if req.postprocess is not None:
-        data = req.postprocess(data)
-    return data  # type: ignore[no-any-return]
+    return parse_response(response, req.method, req.path)
 
 
 def token_decision(token: Token | None, now: datetime) -> str:
@@ -383,7 +421,7 @@ def _token_call(config: Config, api_path: str, body: dict[str, str]) -> Flow[Any
     req: Request[Any] = Request("POST", api_path, body=body)
     http_request = build_http_request(req, config, None)
     # Token issue/refresh moves no money, so it is retried like a GET.
-    response = yield from transport_flow(http_request, "POST", api_path, True, config.max_retries)
+    response = yield from transport_flow(http_request, "POST", api_path, True, config)
     return parse_response(response, "POST", api_path)
 
 

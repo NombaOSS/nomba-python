@@ -76,6 +76,7 @@ class Nomba:
         self._http = http_client if http_client is not None else httpx.Client(follow_redirects=False)
         self._token_lock = threading.Lock()
         self._sleep: Callable[[float], None] = time.sleep
+        self._monotonic: Callable[[], float] = time.monotonic
         self._now: Callable[[], datetime] = _core.utcnow
 
         self.auth = Auth(self)
@@ -141,13 +142,31 @@ class Nomba:
 
     def _perform(self, action: Any) -> Any:
         if isinstance(action, Send):
-            return self._http.send(action.request, follow_redirects=False)
+            return self._send(action)
         if isinstance(action, Sleep):
             self._sleep(action.seconds)
             return None
         if isinstance(action, AccessToken):
             return self._access_token(action.stale)
         raise TypeError(f"unknown action {action!r}")  # pragma: no cover
+
+    def _send(self, action: Send) -> httpx.Response:
+        # Stream the body so the total time per attempt can be enforced, on top
+        # of httpx's per-phase timeouts.
+        deadline = self._monotonic() + action.total_timeout
+        response = self._http.send(action.request, stream=True, follow_redirects=False)
+        chunks: list[bytes] = []
+        try:
+            _core.check_deadline(self._monotonic(), deadline, action.request)
+            if response.is_stream_consumed:
+                # Already in memory (some test transports return read responses).
+                return response
+            for chunk in response.iter_raw():
+                chunks.append(chunk)
+                _core.check_deadline(self._monotonic(), deadline, action.request)
+        finally:
+            response.close()
+        return _core.buffered(response, b"".join(chunks))
 
     def _access_token(self, stale: str | None) -> str:
         # Single-flight: concurrent callers wait here and then reuse the token
@@ -207,6 +226,7 @@ class AsyncNomba:
         self._http = http_client if http_client is not None else httpx.AsyncClient(follow_redirects=False)
         self._token_lock: asyncio.Lock | None = None
         self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+        self._monotonic: Callable[[], float] = time.monotonic
         self._now: Callable[[], datetime] = _core.utcnow
 
         self.auth = AsyncAuth(self)
@@ -281,13 +301,29 @@ class AsyncNomba:
 
     async def _perform(self, action: Any) -> Any:
         if isinstance(action, Send):
-            return await self._http.send(action.request, follow_redirects=False)
+            return await self._send(action)
         if isinstance(action, Sleep):
             await self._sleep(action.seconds)
             return None
         if isinstance(action, AccessToken):
             return await self._access_token(action.stale)
         raise TypeError(f"unknown action {action!r}")  # pragma: no cover
+
+    async def _send(self, action: Send) -> httpx.Response:
+        deadline = self._monotonic() + action.total_timeout
+        response = await self._http.send(action.request, stream=True, follow_redirects=False)
+        chunks: list[bytes] = []
+        try:
+            _core.check_deadline(self._monotonic(), deadline, action.request)
+            if response.is_stream_consumed:
+                # Already in memory (some test transports return read responses).
+                return response
+            async for chunk in response.aiter_raw():
+                chunks.append(chunk)
+                _core.check_deadline(self._monotonic(), deadline, action.request)
+        finally:
+            await response.aclose()
+        return _core.buffered(response, b"".join(chunks))
 
     async def _store_get(self) -> Token | None:
         result: Any = self._store.get()

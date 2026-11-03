@@ -124,7 +124,8 @@ def verify_signature(
     """Verify a Nomba webhook and return the parsed event.
 
     Reads ``nomba-signature`` (or ``nomba-sig-value``) and ``nomba-timestamp``
-    (header names are case-insensitive). If ``tolerance_seconds`` is set, the
+    (header names are case-insensitive) and compares the signature exactly,
+    in constant time. If ``tolerance_seconds`` is set, the
     timestamp must be within that many seconds of now, which limits replays.
 
     Raises :class:`~nomba.errors.WebhookVerificationError` if anything is wrong.
@@ -159,9 +160,9 @@ def verify_signature(
         raise WebhookVerificationError("Webhook body is not a JSON object")
 
     expected = compute_signature(event, timestamp, signing_key)
-    # Nomba's reference implementation compares case-insensitively, and its
-    # documented sample differs from the computed value only in letter case.
-    if not hmac.compare_digest(expected.lower().encode(), signature.strip().lower().encode()):
+    # Exact, constant-time comparison. Base64 is case-sensitive, so a
+    # case-insensitive compare would accept signatures Nomba never produced.
+    if not hmac.compare_digest(expected.encode(), signature.strip().encode()):
         raise WebhookVerificationError("Webhook signature does not match")
     return cast(WebhookEvent, event)
 

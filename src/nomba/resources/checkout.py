@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .._core import Request, add_reference, new_reference, path, require
-from ..errors import ValidationError
+from .._core import Request, new_reference, path, require
+from ..errors import Reference, ValidationError
 from ..types.checkout import (
     CancelOrderParams,
     CancelTransactionParams,
@@ -112,7 +112,7 @@ def _charge_saved_card(params: ChargeSavedCardParams) -> Request[ChargeSavedCard
         "POST",
         "/v1/checkout/tokenized-card-payment",
         body=body,
-        postprocess=add_reference("orderReference", ref),
+        reference=Reference("orderReference", ref),
     )
 
 

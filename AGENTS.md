@@ -14,7 +14,9 @@ Official Python SDK for the Nomba API (`pip install nomba`, `from nomba import N
 - Never log, `repr()` or put in an exception message the client secret, access/refresh tokens or the Authorization header. Error messages carry method and path only (no query, no headers).
 - Path parameters go through `_core.path()`: validated (no empty, `.`, `..`, `/`) and URL-encoded.
 - Money-moving calls (`transfers.to_bank/to_wallet`, `bills.*` purchases) generate a UUID v4 `merchantTxRef` if missing and return it; `checkout.charge_saved_card` does the same for `order.orderReference`.
-- Webhook verification uses `hmac.compare_digest` on the raw body; never verify a re-serialised object.
+- Money-moving calls set `Request.reference`; `api_flow` adds it to the result and to every `NombaError` the call raises (`err.reference`). Don't bypass `api_flow`.
+- `timeout` is a total per-attempt deadline: the drivers stream the body and call `_core.check_deadline` between chunks, on top of httpx's per-phase timeouts.
+- Webhook verification uses an exact `hmac.compare_digest` (no case folding) on the raw body; never verify a re-serialised object.
 - Tests mock HTTP with `httpx.MockTransport`; never call Nomba from tests.
 - Every new sync method needs its async twin and a case in `tests/test_resources.py`.
 

@@ -34,8 +34,11 @@ def pay(nomba: Nomba, account_number: str, bank_code: str, amount: float) -> str
         status = result["status"]
     except ValidationError:
         raise  # the request was wrong; nothing was sent to the bank
-    except (APIConnectionError, ServerError):
-        status = TransactionStatus.PENDING_BILLING.value  # unknown: find out below
+    except (APIConnectionError, ServerError) as err:
+        # Unknown outcome. err.reference holds the reference that was sent
+        # (the same one we stored above), so we can look the transfer up.
+        print("Outcome unknown, requerying", err.reference.value if err.reference else reference)
+        status = TransactionStatus.PENDING_BILLING.value  # find out below
 
     # Poll until the status is final. In production, prefer the payout_* webhooks.
     for _ in range(10):

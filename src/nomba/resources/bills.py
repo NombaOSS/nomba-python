@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._core import Request, add_reference, path, require, validate_segment, with_reference
+from .._core import Request, path, require, validate_segment, with_reference
 from ..types.bills import (
     AirtimeParams,
     BettingParams,
@@ -23,7 +23,7 @@ def _purchase(product: str, params: Any, sub_account_id: str | None) -> Request[
     body, ref = with_reference(params)
     base = f"/v2/bill/{product}"
     p = base if sub_account_id is None else path(base + "/{}", sub_account_id)
-    return Request("POST", p, body=body, postprocess=add_reference("merchantTxRef", ref))
+    return Request("POST", p, body=body, reference=ref)
 
 
 def _list_data_plans(telco: str) -> Request[list[DataPlan]]:

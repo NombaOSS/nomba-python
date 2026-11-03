@@ -13,11 +13,13 @@ from nomba.webhooks import compute_signature, verify_signature
 FIXTURE = (Path(__file__).parent / "fixtures" / "webhook-fixture.json").read_bytes()
 KEY = "SampleSignatureKey123"
 TIMESTAMP = "2025-09-29T10:51:44Z"
-# Written with explicit code points so the letter case can't be mangled:
-# 0x71 is "q" (what HMAC-SHA256 actually produces), 0x51 is "Q" (Nomba's docs).
+# Written with explicit code points so the letter case can't be mangled in
+# transit: 0x71 is a lower-case "q". This is both the signature in Nomba's
+# webhook docs and the value HMAC-SHA256 produces.
 _REST = "30yFZDyykoymBf9+mt1wz5UAuLk57raPGPHlGzIv00="
-COMPUTED = "\x71" + _REST
-DOCUMENTED = "\x51" + _REST
+DOCUMENTED = "\x71" + _REST
+COMPUTED = DOCUMENTED
+CASE_ALTERED = "\x51" + _REST  # upper-case "Q": not a valid signature
 
 
 def headers(signature: str = DOCUMENTED, **extra: str) -> dict[str, str]:
@@ -30,11 +32,21 @@ def test_computed_signature_matches_vector() -> None:
     assert ord(sig[0]) == 0x71
 
 
-@pytest.mark.parametrize("signature", [DOCUMENTED, COMPUTED, COMPUTED.upper(), COMPUTED.lower()])
-def test_vector_verifies_case_insensitively(signature: str) -> None:
-    event = verify_signature(FIXTURE, headers(signature), KEY)
+def test_documented_vector_verifies() -> None:
+    event = verify_signature(FIXTURE, headers(DOCUMENTED), KEY)
     assert event["event_type"] == WebhookEventType.PAYMENT_SUCCESS
     assert event["data"]["transaction"]["transactionId"].startswith("API-VACT_TRA-")
+
+
+def test_surrounding_whitespace_is_ignored() -> None:
+    verify_signature(FIXTURE, headers(f"  {DOCUMENTED}\n"), KEY)
+
+
+@pytest.mark.parametrize("signature", [CASE_ALTERED, DOCUMENTED.upper(), DOCUMENTED.lower()])
+def test_case_altered_signature_fails(signature: str) -> None:
+    assert signature != DOCUMENTED
+    with pytest.raises(WebhookVerificationError, match="does not match"):
+        verify_signature(FIXTURE, headers(signature), KEY)
 
 
 def test_accepts_str_body_and_bytearray() -> None:

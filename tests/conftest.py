@@ -65,7 +65,8 @@ class MockAPI:
                 raise item
             if callable(item) and not isinstance(item, httpx.Response):
                 return item(request)
-            return item
+            # A response body can be streamed only once; hand out a fresh copy.
+            return httpx.Response(item.status_code, headers=item.headers, content=item.content)
         if key in (("POST", "/v1/auth/token/issue"), ("POST", "/v1/auth/token/refresh")):
             self._tokens += 1
             return token_response(self._tokens, minutes=self.token_minutes)

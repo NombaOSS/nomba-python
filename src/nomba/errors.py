@@ -18,6 +18,7 @@ Hierarchy::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
@@ -30,14 +31,36 @@ __all__ = [
     "NotFoundError",
     "PermissionDeniedError",
     "RateLimitError",
+    "Reference",
     "ServerError",
     "ValidationError",
     "WebhookVerificationError",
 ]
 
 
+@dataclass(frozen=True)
+class Reference:
+    """The idempotency reference a money-moving call sent.
+
+    ``field`` is the response/request key (``"merchantTxRef"``, or
+    ``"orderReference"`` for saved-card charges) and ``value`` is the reference,
+    whether you passed it or the SDK generated it.
+    """
+
+    field: str
+    value: str
+
+
 class NombaError(Exception):
-    """Base class for every error raised by this SDK."""
+    """Base class for every error raised by this SDK.
+
+    ``reference`` is set when the failed call was a money-moving one
+    (transfers, bill purchases, saved-card charges). After a timeout or
+    connection error the outcome is unknown: look the transaction up with
+    ``reference.value`` before retrying, and retry with the same reference.
+    """
+
+    reference: Reference | None = None
 
 
 class ConfigurationError(NombaError):
