@@ -18,6 +18,7 @@ Official Python SDK for the Nomba API (`pip install nomba`, `from nomba import N
 - Money-moving calls set `Request.reference`; `api_flow` adds it to the result and to every `NombaError` the call raises (`err.reference`). Don't bypass `api_flow`.
 - `timeout` is a total per-attempt deadline: the drivers stream the body through `_core.BodyReader`, which checks the deadline after the headers and after each chunk, on top of httpx's per-phase timeouts.
 - Webhook verification uses an exact `hmac.compare_digest` (no case folding) on the raw body; never verify a re-serialised object.
+- The signed webhook message joins fields with `:`: keep the strict RFC 3339 check on `nomba-timestamp` and the no-`:` check on `responseCode`, or field boundaries become ambiguous.
 - Tests mock HTTP with `httpx.MockTransport`; never call Nomba from tests.
 - Every new sync method needs its async twin and a case in `tests/test_resources.py`.
 

@@ -13,5 +13,5 @@
 - Generated `merchantTxRef` (and `orderReference` for saved-card charges) when you don't pass one, returned in the result and attached to any error the call raises as `err.reference`.
 - Path parameter validation and encoding.
 - Cursor pagination helpers (`*_all`).
-- Webhook signature verification with an exact constant-time compare, usable without a client (`nomba.webhooks.verify_signature`), with optional timestamp tolerance.
+- Webhook signature verification with an exact constant-time compare, usable without a client (`nomba.webhooks.verify_signature`), with optional timestamp tolerance. Rejects non-RFC 3339 timestamps and `responseCode` values containing `:`, which would make the signed fields ambiguous.
 - `TypedDict` types for params and responses; `TransactionStatus` and `WebhookEventType` enums.

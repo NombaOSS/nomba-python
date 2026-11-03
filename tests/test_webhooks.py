@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -118,9 +121,83 @@ def test_tolerance() -> None:
         verify_signature(FIXTURE, {"nomba-signature": sig, "nomba-timestamp": future}, KEY, tolerance_seconds=300)
 
 
-def test_tolerance_rejects_unparseable_timestamp() -> None:
-    with pytest.raises(WebhookVerificationError, match="valid timestamp"):
-        verify_signature(FIXTURE, {"nomba-signature": "x", "nomba-timestamp": "yesterday"}, KEY, tolerance_seconds=5)
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "yesterday",
+        "51:44Z",
+        "2025-09-29 10:51:44Z",
+        "2025-09-29T10:51:44",
+        "2025-09-29T10:51Z",
+        "2025-09-29T10:51:44+0100",
+        "2025-09-29T10:51:44Zjunk",
+        "1759143104",
+    ],
+)
+@pytest.mark.parametrize("tolerance", [None, 300.0])
+def test_malformed_timestamp_rejected(timestamp: str, tolerance: float | None) -> None:
+    event = json.loads(FIXTURE)
+    sig = compute_signature(event, timestamp, KEY)  # a genuinely valid signature for it
+    with pytest.raises(WebhookVerificationError, match="RFC 3339"):
+        verify_signature(
+            FIXTURE, {"nomba-signature": sig, "nomba-timestamp": timestamp}, KEY, tolerance_seconds=tolerance
+        )
+
+
+@pytest.mark.parametrize(
+    "timestamp", ["2025-09-29T10:51:44.123Z", "2025-09-29T11:51:44+01:00", "2025-09-29T10:51:44-00:00"]
+)
+def test_rfc3339_variants_accepted(timestamp: str) -> None:
+    event = json.loads(FIXTURE)
+    sig = compute_signature(event, timestamp, KEY)
+    verify_signature(FIXTURE, {"nomba-signature": sig, "nomba-timestamp": timestamp}, KEY)
+
+
+def _old_join(event: dict[str, Any], timestamp: str) -> str:
+    """The signed message as built before the hardening (no responseCode check)."""
+    d = event["data"]
+    m, t = d["merchant"], d["transaction"]
+    fields = [event["event_type"], event["requestId"], m["userId"], m["walletId"], t["transactionId"], t["type"]]
+    return ":".join([*fields, t["time"], t["responseCode"], timestamp])
+
+
+def _hmac(message: str) -> str:
+    return base64.b64encode(hmac.new(KEY.encode(), message.encode(), hashlib.sha256).digest()).decode()
+
+
+@pytest.mark.parametrize("tolerance", [None, 300.0, 10.0**12])
+def test_split_timestamp_forgery_rejected(tolerance: float | None) -> None:
+    genuine = json.loads(FIXTURE)
+    forged = json.loads(FIXTURE)
+    forged["data"]["transaction"]["responseCode"] = ":2025-09-29T10"
+    forged_ts = "51:44Z"
+    # Moving the front of the timestamp into responseCode leaves the signed
+    # message, and so the genuine signature, unchanged.
+    assert _old_join(forged, forged_ts) == _old_join(genuine, TIMESTAMP)
+    assert _hmac(_old_join(forged, forged_ts)) == DOCUMENTED
+    hdrs = {"nomba-signature": DOCUMENTED, "nomba-timestamp": forged_ts}
+    with pytest.raises(WebhookVerificationError, match="RFC 3339"):
+        verify_signature(json.dumps(forged).encode(), hdrs, KEY, tolerance_seconds=tolerance)
+
+
+def test_split_forgery_rejected_even_with_a_well_formed_timestamp() -> None:
+    # Same trick, but leaving a timestamp-shaped header: caught by the responseCode check.
+    forged = json.loads(FIXTURE)
+    forged["data"]["transaction"]["responseCode"] = ":2025-09-29T10:51:44Z:2025"
+    hdrs = {"nomba-signature": DOCUMENTED, "nomba-timestamp": "2025-09-29T10:51:44Z"}
+    with pytest.raises(WebhookVerificationError, match="responseCode"):
+        verify_signature(json.dumps(forged).encode(), hdrs, KEY)
+
+
+def test_response_code_with_colon_rejected_even_with_valid_timestamp() -> None:
+    forged = json.loads(FIXTURE)
+    forged["data"]["transaction"]["responseCode"] = "00:01"
+    with pytest.raises(WebhookVerificationError, match="responseCode"):
+        verify_signature(json.dumps(forged).encode(), headers(), KEY)
+
+
+def test_fixture_still_verifies_with_tolerance_off() -> None:
+    assert verify_signature(FIXTURE, headers(), KEY)["event_type"] == "payment_success"
 
 
 def test_tolerance_off_by_default() -> None:
@@ -197,3 +274,11 @@ def test_event_type_constants() -> None:
     ]
     assert webhooks.PAYOUT_REFUND == "payout_refund"
     assert str(WebhookEventType.PAYMENT_FAILED) == "payment_failed"
+
+
+def test_impossible_date_rejected_with_tolerance() -> None:
+    event = json.loads(FIXTURE)
+    timestamp = "2025-13-45T10:51:44Z"  # right shape, not a real date
+    sig = compute_signature(event, timestamp, KEY)
+    with pytest.raises(WebhookVerificationError, match="valid timestamp"):
+        verify_signature(FIXTURE, {"nomba-signature": sig, "nomba-timestamp": timestamp}, KEY, tolerance_seconds=300)

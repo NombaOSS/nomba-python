@@ -320,6 +320,8 @@ def nomba_webhook():
 
 The signature is a base64 HMAC-SHA256 of fields from the body and the `nomba-timestamp` header, keyed with the signing key from your Nomba dashboard. The SDK reads `nomba-signature` (or `nomba-sig-value`) and `nomba-timestamp` case-insensitively, rejects any `nomba-signature-algorithm` other than `HmacSHA256`, and compares the signature exactly, in constant time. Base64 is case-sensitive, so a signature that differs only in letter case is rejected.
 
+Because the signed fields are joined with `:` and the timestamp itself contains colons, the SDK always requires `nomba-timestamp` to be a strict RFC 3339 timestamp (for example `2025-09-29T10:51:44Z`) and rejects a webhook whose `data.transaction.responseCode` contains `:`. Otherwise part of the timestamp could be moved into the body without changing the signature.
+
 `tolerance_seconds` (off by default) rejects webhooks whose timestamp is further than that from now, which limits replays. Nomba retries failed deliveries, so make your handler idempotent on `event["requestId"]` either way.
 
 From a client you can also call `nomba.webhooks.verify(raw_body, headers, signing_key)`. Event types are in `nomba.WebhookEventType`: `payment_success`, `payment_failed`, `payment_reversal`, `payout_success`, `payout_failed`, `payout_refund`. See [examples/webhook_flask.py](examples/webhook_flask.py) and [examples/webhook_fastapi.py](examples/webhook_fastapi.py).

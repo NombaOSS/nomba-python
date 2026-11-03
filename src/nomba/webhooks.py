@@ -17,6 +17,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any, cast
@@ -49,6 +50,11 @@ PAYOUT_FAILED = WebhookEventType.PAYOUT_FAILED.value
 PAYOUT_REFUND = WebhookEventType.PAYOUT_REFUND.value
 
 SIGNATURE_ALGORITHM = "HmacSHA256"
+
+# The signed message joins fields with ":" and the timestamp itself contains
+# colons, so field boundaries are only unambiguous if the timestamp has exactly
+# this shape and no other signed field contains ":".
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})")
 
 HeadersLike = Mapping[str, str] | Iterable[tuple[str | bytes, str | bytes]]
 
@@ -90,6 +96,10 @@ def _signing_message(event: Mapping[str, Any], timestamp: str) -> str:
     response_code = _field(transaction.get("responseCode"))
     if response_code == "null":
         response_code = ""
+    if ":" in response_code:
+        # Would let part of the timestamp move into responseCode without
+        # changing the signed message.
+        raise WebhookVerificationError("Webhook data.transaction.responseCode contains ':'")
     parts = [
         event_type,
         request_id,
@@ -139,6 +149,9 @@ def verify_signature(
         raise WebhookVerificationError("Missing nomba-signature header")
     if not timestamp:
         raise WebhookVerificationError("Missing nomba-timestamp header")
+    timestamp = timestamp.strip()
+    if not _RFC3339.fullmatch(timestamp):
+        raise WebhookVerificationError("nomba-timestamp is not an RFC 3339 timestamp")
     algorithm = lowered.get("nomba-signature-algorithm")
     if algorithm is not None and algorithm.strip().lower() != SIGNATURE_ALGORITHM.lower():
         raise WebhookVerificationError(f"Unsupported signature algorithm {algorithm!r}")
