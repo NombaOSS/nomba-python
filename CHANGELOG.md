@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.1.0] - 2026-11-03
+## [0.1.1] - 2026-11-03
+
+First release on PyPI. Version 0.1.0 was never published: PyPI had already used that filename for an earlier, deleted `nomba` project, and filenames can't be reused.
 
 ### Added
 
