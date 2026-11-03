@@ -44,7 +44,7 @@ def test_first_call_issues_token_then_reuses_it(api: MockAPI) -> None:
     assert call.headers["accountid"] == ACCOUNT_ID
     assert call.headers["accept"] == "application/json"
     assert call.headers["content-type"] == "application/json"
-    assert call.headers["user-agent"].startswith("nomba-python/0.1.0 python/")
+    assert call.headers["user-agent"].startswith("nomba-python/0.1.1 python/")
     assert call.extensions["timeout"]["read"] == 30.0
 
 
