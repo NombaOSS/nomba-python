@@ -56,7 +56,7 @@ USER_AGENT = f"nomba-python/{__version__} python/{platform.python_version()} htt
 
 @dataclass(frozen=True)
 class Request(Generic[T]):
-    """One API operation. ``T`` is the type of the unwrapped ``data``."""
+    """One API operation and its policy. ``T`` is the type of the unwrapped ``data``."""
 
     method: str
     path: str
@@ -65,19 +65,35 @@ class Request(Generic[T]):
     reference: Reference | None = None
     """Idempotency reference of a money-moving call: added to the returned
     data if missing, and attached to any error the call raises."""
+    retryable: bool | None = None
+    """Retry connection errors, timeouts, 429 and 5xx. ``None`` means "only for
+    GET": a retried POST/PUT/DELETE could move money twice."""
     retry_on_401: bool = True
+    """Get a fresh token and resend once after a 401 (safe: a 401 means the
+    request was not processed)."""
+    authenticated: bool = True
+    """Send ``Authorization: Bearer <token>``."""
+    auth_endpoint: bool = False
+    """A token issue/refresh/revoke call: error bodies are stored without ``data``."""
 
-    @property
-    def retryable(self) -> bool:
-        # Only reads are retried automatically: a retried POST/PUT/DELETE
-        # could move money twice.
-        return self.method == "GET"
+    def __post_init__(self) -> None:
+        if self.retryable is None:
+            object.__setattr__(self, "retryable", self.method == "GET")
 
 
 def path(template: str, *values: object) -> str:
     """Fill ``{}`` placeholders with validated, URL-encoded path segments."""
     encoded = [quote(validate_segment(v), safe="") for v in values]
     return template.format(*encoded)
+
+
+def sub_account_path(template: str, sub_account_id: str | None) -> str:
+    """Fill ``{sub}`` with ``/<sub_account_id>`` (validated, encoded), or nothing for the parent account.
+
+    ``sub_account_path("/v1/accounts{sub}/balance", None)`` is ``/v1/accounts/balance``.
+    """
+    sub = "" if sub_account_id is None else "/" + quote(validate_segment(sub_account_id), safe="")
+    return template.replace("{sub}", sub)
 
 
 def validate_segment(value: object, name: str = "path parameter") -> str:
@@ -150,10 +166,21 @@ def _add_reference(data: Any, reference: Reference) -> Any:
 
 @dataclass(frozen=True)
 class Send:
-    """Send ``request`` and read the whole body within ``total_timeout`` seconds."""
+    """Send ``request`` and read the whole body within ``total_timeout`` seconds.
+
+    The driver answers with a :class:`Received`.
+    """
 
     request: httpx.Request
     total_timeout: float
+
+
+@dataclass(frozen=True)
+class Received:
+    """A response (headers only) and its fully read, decoded body."""
+
+    response: httpx.Response
+    content: bytes
 
 
 @dataclass(frozen=True)
@@ -205,26 +232,31 @@ class TotalTimeout(httpx.ReadTimeout):
     """The whole attempt (connect, headers and body) took longer than ``timeout``."""
 
 
-def check_deadline(now: float, deadline: float, request: httpx.Request) -> None:
-    """Raise :class:`TotalTimeout` once ``now`` is past ``deadline``.
+class BodyReader:
+    """Collects a streamed body while enforcing a total deadline for the attempt.
 
     httpx timeouts apply per phase (connect, each read, ...), so a server
-    trickling bytes could keep a request alive far beyond ``timeout``. The
-    drivers read the body in chunks and call this between them.
+    trickling bytes could keep a request alive far beyond ``timeout``. Create
+    the reader before sending (the clock starts then), call :meth:`check`
+    once the headers arrive and :meth:`add` for each decoded chunk.
     """
-    if now > deadline:
-        raise TotalTimeout("total request timeout exceeded", request=request)
 
+    def __init__(self, action: Send, clock: Callable[[], float]) -> None:
+        self._request = action.request
+        self._clock = clock
+        self._deadline = clock() + action.total_timeout
+        self._chunks: list[bytes] = []
 
-def buffered(response: httpx.Response, raw: bytes) -> httpx.Response:
-    """A fully read copy of a streamed ``response`` built from its raw (undecoded) bytes."""
-    return httpx.Response(
-        response.status_code,
-        headers=response.headers,
-        content=raw,
-        request=response.request,
-        extensions=response.extensions,
-    )
+    def check(self) -> None:
+        if self._clock() > self._deadline:
+            raise TotalTimeout("total request timeout exceeded", request=self._request)
+
+    def add(self, chunk: bytes) -> None:
+        self._chunks.append(chunk)
+        self.check()
+
+    def received(self, response: httpx.Response) -> Received:
+        return Received(response, b"".join(self._chunks))
 
 
 def _is_retryable_status(status: int) -> bool:
@@ -262,16 +294,16 @@ def backoff_seconds(attempt: int, response: httpx.Response | None = None) -> flo
     return min(base * jitter, MAX_BACKOFF_SECONDS)
 
 
-def transport_flow(
-    request: httpx.Request, method: str, api_path: str, retryable: bool, config: Config
-) -> Flow[httpx.Response]:
-    """Send ``request``, retrying network errors, 429 and 5xx when ``retryable``."""
+def transport_flow(req: Request[Any], config: Config, access_token: str | None) -> Flow[Received]:
+    """Send ``req``, retrying network errors, 429 and 5xx when ``req.retryable``."""
+    request = build_http_request(req, config, access_token)
+    method, api_path = req.method, req.path
     attempt = 0
     while True:
-        response: httpx.Response | None = None
+        received: Received | None = None
         error: APIConnectionError | None = None
         try:
-            response = yield Send(request, config.timeout)
+            received = yield Send(request, config.timeout)
         except httpx.TimeoutException as exc:
             error = APITimeoutError(f"Request to Nomba timed out [{method} {api_path}]", method=method, path=api_path)
             error.__cause__ = exc
@@ -282,13 +314,14 @@ def transport_flow(
                 path=api_path,
             )
             error.__cause__ = exc
-        if response is not None and not _is_retryable_status(response.status_code):
-            return response
-        if not retryable or attempt >= config.max_retries:
+        response = received.response if received is not None else None
+        if received is not None and not _is_retryable_status(received.response.status_code):
+            return received
+        if not req.retryable or attempt >= config.max_retries:
             if error is not None:
                 raise error
-            if response is not None:
-                return response
+            if received is not None:
+                return received
         yield Sleep(backoff_seconds(attempt, response))
         attempt += 1
 
@@ -307,6 +340,13 @@ def _format_message(status: int, code: str | None, description: str, method: str
     return f"Nomba API error {status}{code_part}: {description} [{method} {api_path}]"
 
 
+def _error_body(body: Any, req: Request[Any]) -> Any:
+    # Token endpoints' data can hold tokens; keep it out of exceptions.
+    if req.auth_endpoint and isinstance(body, dict):
+        return {k: v for k, v in body.items() if k != "data"}
+    return body
+
+
 def _error_class(status: int) -> type[ApiError]:
     if status == 401:
         return AuthenticationError
@@ -323,11 +363,13 @@ def _error_class(status: int) -> type[ApiError]:
     return ApiError
 
 
-def parse_response(response: httpx.Response, method: str, api_path: str) -> Any:
+def parse_response(received: Received, req: Request[Any]) -> Any:
     """Unwrap the envelope and return ``data``, or raise the matching error."""
+    response, content = received.response, received.content
+    method, api_path = req.method, req.path
     body: Any
     try:
-        body = response.json() if response.content else None
+        body = json.loads(content) if content else None
     except ValueError:
         body = None
     status = response.status_code
@@ -338,9 +380,10 @@ def parse_response(response: httpx.Response, method: str, api_path: str) -> Any:
         if isinstance(body, dict):
             if code is None or code in SUCCESS_CODES:
                 return body.get("data")
-        elif not response.content:
+        elif not content:
             return None
         description = _description(body, response) if isinstance(body, dict) else "Response was not a JSON envelope"
+        body = _error_body(body, req)
         raise ApiError(
             _format_message(status, code, description, method, api_path),
             http_status=status,
@@ -352,6 +395,7 @@ def parse_response(response: httpx.Response, method: str, api_path: str) -> Any:
         )
 
     description = _description(body, response)
+    body = _error_body(body, req)
     cls = _error_class(status)
     kwargs: dict[str, Any] = {
         "http_status": status,
@@ -393,18 +437,24 @@ def api_flow(req: Request[T], config: Config) -> Flow[T]:
 
 
 def _api_call(req: Request[Any], config: Config) -> Flow[Any]:
-    def send(token: str) -> Flow[httpx.Response]:
-        http_request = build_http_request(req, config, token)
-        return transport_flow(http_request, req.method, req.path, req.retryable, config)
-
-    token: str = yield AccessToken(None)
-    response = yield from send(token)
-    if response.status_code == 401 and req.retry_on_401:
+    token: str | None = (yield AccessToken(None)) if req.authenticated else None
+    received = yield from transport_flow(req, config, token)
+    if received.response.status_code == 401 and req.retry_on_401 and req.authenticated:
         # A 401 means the request was not processed, so retrying once with a
         # fresh token is safe even for POST.
         token = yield AccessToken(token)
-        response = yield from send(token)
-    return parse_response(response, req.method, req.path)
+        received = yield from transport_flow(req, config, token)
+    return parse_response(received, req)
+
+
+def usable_token(token: Token | None, stale: str | None, now: datetime) -> str | None:
+    """The cached access token if it can be used as is, else ``None``.
+
+    Lets the drivers skip the token lock on the hot path.
+    """
+    if token is None or token.access_token == stale or token_decision(token, now) != "valid":
+        return None
+    return token.access_token
 
 
 def token_decision(token: Token | None, now: datetime) -> str:
@@ -417,12 +467,21 @@ def token_decision(token: Token | None, now: datetime) -> str:
     return "refresh" if token.refresh_token else "issue"
 
 
-def _token_call(config: Config, api_path: str, body: dict[str, str]) -> Flow[Any]:
-    req: Request[Any] = Request("POST", api_path, body=body)
-    http_request = build_http_request(req, config, None)
+def _token_request(api_path: str, body: dict[str, str]) -> Request[Any]:
     # Token issue/refresh moves no money, so it is retried like a GET.
-    response = yield from transport_flow(http_request, "POST", api_path, True, config)
-    return parse_response(response, "POST", api_path)
+    return Request(
+        "POST", api_path, body=body, retryable=True, retry_on_401=False, authenticated=False, auth_endpoint=True
+    )
+
+
+def revoke_request(config: Config, token: Token) -> Request[Any]:
+    return Request(
+        "POST",
+        "/v1/auth/token/revoke",
+        body={"clientId": config.client_id, "access_token": token.access_token},
+        retry_on_401=False,
+        auth_endpoint=True,
+    )
 
 
 def _is_client_rejection(error: ApiError) -> bool:
@@ -434,10 +493,12 @@ def obtain_token_flow(config: Config, current: Token | None, now: Callable[[], d
     """Refresh ``current`` if given, falling back to a fresh issue on a 4xx."""
     if current is not None and current.refresh_token:
         try:
-            data = yield from _token_call(
+            data = yield from _api_call(
+                _token_request(
+                    "/v1/auth/token/refresh",
+                    {"grant_type": "refresh_token", "refresh_token": current.refresh_token},
+                ),
                 config,
-                "/v1/auth/token/refresh",
-                {"grant_type": "refresh_token", "refresh_token": current.refresh_token},
             )
             return token_from_response(data, now())
         except ApiError as exc:
@@ -452,14 +513,16 @@ def obtain_token_flow(config: Config, current: Token | None, now: Callable[[], d
                 return current
             # fall through to a fresh issue
     try:
-        data = yield from _token_call(
+        data = yield from _api_call(
+            _token_request(
+                "/v1/auth/token/issue",
+                {
+                    "grant_type": "client_credentials",
+                    "client_id": config.client_id,
+                    "client_secret": config.client_secret,
+                },
+            ),
             config,
-            "/v1/auth/token/issue",
-            {
-                "grant_type": "client_credentials",
-                "client_id": config.client_id,
-                "client_secret": config.client_secret,
-            },
         )
     except ApiError as exc:
         if isinstance(exc, AuthenticationError) or not _is_client_rejection(exc):

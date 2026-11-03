@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 
-from .._core import Request, check_limit, exactly_one, path
+from .._core import Request, check_limit, exactly_one, sub_account_path
 from ..types.accounts import AccountBalance, AccountDetails, Terminal, TerminalPage
 from ._base import AsyncResource, SyncResource, aiterate_pages, iterate_pages
 
@@ -12,9 +12,7 @@ def _get_parent() -> Request[AccountDetails]:
 
 
 def _get_balance(sub_account_id: str | None) -> Request[AccountBalance]:
-    if sub_account_id is None:
-        return Request("GET", "/v1/accounts/balance")
-    return Request("GET", path("/v1/accounts/{}/balance", sub_account_id))
+    return Request("GET", sub_account_path("/v1/accounts{sub}/balance", sub_account_id))
 
 
 def _get_sub_account(account_id: str | None, account_ref: str | None) -> Request[AccountDetails]:
@@ -32,7 +30,6 @@ def _list_terminals(
     terminal_label: str | None,
     merchant_name: str | None,
 ) -> Request[TerminalPage]:
-    p = "/v1/accounts/terminals" if sub_account_id is None else path("/v1/accounts/{}/terminals", sub_account_id)
     query = {
         "limit": check_limit(limit),
         "cursor": cursor,
@@ -41,7 +38,7 @@ def _list_terminals(
         "terminalLabel": terminal_label,
         "merchantName": merchant_name,
     }
-    return Request("GET", p, query=query)
+    return Request("GET", sub_account_path("/v1/accounts{sub}/terminals", sub_account_id), query=query)
 
 
 class Accounts(SyncResource):

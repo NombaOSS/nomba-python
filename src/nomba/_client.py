@@ -13,7 +13,7 @@ import httpx
 
 from . import _core
 from ._config import Config, resolve_config
-from ._core import AccessToken, Flow, Request, Send, Sleep
+from ._core import AccessToken, Flow, Received, Request, Send, Sleep
 from .resources.accounts import Accounts, AsyncAccounts
 from .resources.auth import AsyncAuth, Auth
 from .resources.bills import AsyncBills, Bills
@@ -150,27 +150,26 @@ class Nomba:
             return self._access_token(action.stale)
         raise TypeError(f"unknown action {action!r}")  # pragma: no cover
 
-    def _send(self, action: Send) -> httpx.Response:
+    def _send(self, action: Send) -> Received:
         # Stream the body so the total time per attempt can be enforced, on top
         # of httpx's per-phase timeouts.
-        deadline = self._monotonic() + action.total_timeout
+        reader = _core.BodyReader(action, self._monotonic)
         response = self._http.send(action.request, stream=True, follow_redirects=False)
-        chunks: list[bytes] = []
         try:
-            _core.check_deadline(self._monotonic(), deadline, action.request)
-            if response.is_stream_consumed:
-                # Already in memory (some test transports return read responses).
-                return response
-            for chunk in response.iter_raw():
-                chunks.append(chunk)
-                _core.check_deadline(self._monotonic(), deadline, action.request)
+            reader.check()
+            for chunk in response.iter_bytes():
+                reader.add(chunk)
         finally:
             response.close()
-        return _core.buffered(response, b"".join(chunks))
+        return reader.received(response)
 
     def _access_token(self, stale: str | None) -> str:
-        # Single-flight: concurrent callers wait here and then reuse the token
-        # the first caller obtained.
+        # Fast path: a usable cached token needs no lock.
+        cached = _core.usable_token(self._store.get(), stale, self._now())
+        if cached is not None:
+            return cached
+        # Single-flight: concurrent callers wait here, re-check, and reuse the
+        # token the first caller obtained.
         with self._token_lock:
             token = self._store.get()
             if stale is not None and token is not None and token.access_token == stale:
@@ -190,7 +189,7 @@ class Nomba:
         if token is None:
             return None
         try:
-            return self._request(_revoke_request(self._config, token))
+            return self._request(_core.revoke_request(self._config, token))
         finally:
             with self._token_lock:
                 self._store.set(None)
@@ -309,21 +308,16 @@ class AsyncNomba:
             return await self._access_token(action.stale)
         raise TypeError(f"unknown action {action!r}")  # pragma: no cover
 
-    async def _send(self, action: Send) -> httpx.Response:
-        deadline = self._monotonic() + action.total_timeout
+    async def _send(self, action: Send) -> Received:
+        reader = _core.BodyReader(action, self._monotonic)
         response = await self._http.send(action.request, stream=True, follow_redirects=False)
-        chunks: list[bytes] = []
         try:
-            _core.check_deadline(self._monotonic(), deadline, action.request)
-            if response.is_stream_consumed:
-                # Already in memory (some test transports return read responses).
-                return response
-            async for chunk in response.aiter_raw():
-                chunks.append(chunk)
-                _core.check_deadline(self._monotonic(), deadline, action.request)
+            reader.check()
+            async for chunk in response.aiter_bytes():
+                reader.add(chunk)
         finally:
             await response.aclose()
-        return _core.buffered(response, b"".join(chunks))
+        return reader.received(response)
 
     async def _store_get(self) -> Token | None:
         result: Any = self._store.get()
@@ -337,6 +331,9 @@ class AsyncNomba:
             await result
 
     async def _access_token(self, stale: str | None) -> str:
+        cached = _core.usable_token(await self._store_get(), stale, self._now())
+        if cached is not None:
+            return cached
         async with self._lock():
             token = await self._store_get()
             if stale is not None and token is not None and token.access_token == stale:
@@ -356,16 +353,7 @@ class AsyncNomba:
         if token is None:
             return None
         try:
-            return await self._request(_revoke_request(self._config, token))
+            return await self._request(_core.revoke_request(self._config, token))
         finally:
             async with self._lock():
                 await self._store_set(None)
-
-
-def _revoke_request(config: Config, token: Token) -> Request[Any]:
-    return Request(
-        "POST",
-        "/v1/auth/token/revoke",
-        body={"clientId": config.client_id, "access_token": token.access_token},
-        retry_on_401=False,
-    )

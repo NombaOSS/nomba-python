@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 if TYPE_CHECKING:
     from .._config import Config
@@ -26,27 +26,33 @@ class AsyncTransport(Protocol):
     async def _revoke(self) -> Any: ...
 
 
-class SyncResource:
-    def __init__(self, client: SyncTransport) -> None:
+C = TypeVar("C")
+
+
+class _Resource(Generic[C]):
+    def __init__(self, client: C) -> None:
         self._client = client
 
 
-class AsyncResource:
-    def __init__(self, client: AsyncTransport) -> None:
-        self._client = client
+class SyncResource(_Resource[SyncTransport]):
+    pass
 
 
-def _next_cursor(page: Any, seen: set[str]) -> str | None:
-    cursor = page.get("cursor") if isinstance(page, Mapping) else None
+class AsyncResource(_Resource[AsyncTransport]):
+    pass
+
+
+def _split_page(page: Any, seen: set[str]) -> tuple[list[Any], str | None]:
+    """The page's items, and the cursor to fetch next (``None`` when done or repeated)."""
+    if not isinstance(page, Mapping):
+        return [], None
+    results = page.get("results")
+    cursor = page.get("cursor")
+    items = results if isinstance(results, list) else []
     if not isinstance(cursor, str) or not cursor or cursor in seen:
-        return None
+        return items, None
     seen.add(cursor)
-    return cursor
-
-
-def _results(page: Any) -> list[Any]:
-    results = page.get("results") if isinstance(page, Mapping) else None
-    return results if isinstance(results, list) else []
+    return items, cursor
 
 
 def iterate_pages(fetch: Callable[[str | None], Any]) -> Iterator[Any]:
@@ -54,9 +60,8 @@ def iterate_pages(fetch: Callable[[str | None], Any]) -> Iterator[Any]:
     seen: set[str] = set()
     cursor: str | None = None
     while True:
-        page = fetch(cursor)
-        yield from _results(page)
-        cursor = _next_cursor(page, seen)
+        items, cursor = _split_page(fetch(cursor), seen)
+        yield from items
         if cursor is None:
             return
 
@@ -66,9 +71,8 @@ async def aiterate_pages(fetch: Callable[[str | None], Awaitable[Any]]) -> Async
     seen: set[str] = set()
     cursor: str | None = None
     while True:
-        page = await fetch(cursor)
-        for item in _results(page):
+        items, cursor = _split_page(await fetch(cursor), seen)
+        for item in items:
             yield item
-        cursor = _next_cursor(page, seen)
         if cursor is None:
             return

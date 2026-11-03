@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from .._core import Request, path
+from .._core import Request, path, sub_account_path
 from ..types.terminals import AssignTerminalParams, Terminal, TerminalPaymentRequest, TerminalPaymentRequestParams
 from ._base import AsyncResource, SyncResource
 
 
 def _assign(action: str, params: AssignTerminalParams, sub_account_id: str | None) -> Request[Terminal]:
-    base = f"/v1/terminals/{action}"
-    p = base if sub_account_id is None else path(base + "/{}", sub_account_id)
-    return Request("POST", p, body=dict(params))
+    return Request("POST", sub_account_path(f"/v1/terminals/{action}{{sub}}", sub_account_id), body=dict(params))
 
 
 def _send_payment_request(terminal_id: str, params: TerminalPaymentRequestParams) -> Request[TerminalPaymentRequest]:

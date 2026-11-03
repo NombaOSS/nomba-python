@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 
@@ -13,30 +15,34 @@ from nomba import (
     ServerError,
     ValidationError,
 )
-from nomba._core import parse_response
+from nomba._core import Received, Request, parse_response
 
 from .conftest import CLIENT_SECRET, MockAPI, envelope, make_client
+
+
+def parse(response: httpx.Response, method: str, path: str, **policy: Any) -> Any:
+    return parse_response(Received(response, response.content), Request(method, path, **policy))
 
 
 @pytest.mark.parametrize("code", ["00", "200", "201", None])
 def test_success_codes_return_data(code: str | None) -> None:
     response = envelope({"ok": True}, code=code)
-    assert parse_response(response, "GET", "/x") == {"ok": True}
+    assert parse(response, "GET", "/x") == {"ok": True}
 
 
 def test_numeric_code_is_normalised() -> None:
     response = httpx.Response(200, json={"code": 200, "data": [1]})
-    assert parse_response(response, "GET", "/x") == [1]
+    assert parse(response, "GET", "/x") == [1]
 
 
 def test_empty_2xx_body_returns_none() -> None:
-    assert parse_response(httpx.Response(204), "DELETE", "/x") is None
+    assert parse(httpx.Response(204), "DELETE", "/x") is None
 
 
 def test_2xx_with_failure_code_raises_api_error() -> None:
     response = envelope({"status": False}, code="400", description="Email address doesn't match token key")
     with pytest.raises(ApiError) as info:
-        parse_response(response, "POST", "/v1/checkout/tokenized-card-payment")
+        parse(response, "POST", "/v1/checkout/tokenized-card-payment")
     err = info.value
     assert type(err) is ApiError
     assert err.http_status == 200
@@ -55,7 +61,7 @@ def test_2xx_with_failure_code_raises_api_error() -> None:
 
 def test_2xx_non_json_raises() -> None:
     with pytest.raises(ApiError, match="not a JSON envelope"):
-        parse_response(httpx.Response(200, text="<html>"), "GET", "/x")
+        parse(httpx.Response(200, text="<html>"), "GET", "/x")
 
 
 @pytest.mark.parametrize(
@@ -76,7 +82,7 @@ def test_2xx_non_json_raises() -> None:
 def test_http_status_maps_to_class(status: int, cls: type[ApiError]) -> None:
     response = httpx.Response(status, json={"code": str(status), "description": "Bad thing"})
     with pytest.raises(cls) as info:
-        parse_response(response, "POST", "/v2/transfers/bank")
+        parse(response, "POST", "/v2/transfers/bank")
     err = info.value
     assert type(err) is cls
     assert isinstance(err, ApiError)
@@ -89,7 +95,7 @@ def test_http_status_maps_to_class(status: int, cls: type[ApiError]) -> None:
 
 def test_non_json_error_uses_reason_phrase() -> None:
     with pytest.raises(ServerError) as info:
-        parse_response(httpx.Response(502, text="bad gateway"), "GET", "/x")
+        parse(httpx.Response(502, text="bad gateway"), "GET", "/x")
     assert info.value.description == "Bad Gateway"
     assert info.value.code is None
     assert str(info.value) == "Nomba API error 502: Bad Gateway [GET /x]"
@@ -97,12 +103,12 @@ def test_non_json_error_uses_reason_phrase() -> None:
 
 def test_message_field_used_when_description_missing() -> None:
     with pytest.raises(ValidationError, match="amount is required"):
-        parse_response(httpx.Response(400, json={"message": "amount is required"}), "POST", "/x")
+        parse(httpx.Response(400, json={"message": "amount is required"}), "POST", "/x")
 
 
 def test_long_description_is_truncated() -> None:
     with pytest.raises(ValidationError) as info:
-        parse_response(httpx.Response(400, json={"description": "x" * 5000}), "POST", "/x")
+        parse(httpx.Response(400, json={"description": "x" * 5000}), "POST", "/x")
     assert info.value.description is not None
     assert len(info.value.description) == 500
 
@@ -119,7 +125,7 @@ def test_rate_limit_details() -> None:
         },
     )
     with pytest.raises(RateLimitError) as info:
-        parse_response(response, "POST", "/v2/transfers/bank")
+        parse(response, "POST", "/v2/transfers/bank")
     err = info.value
     assert err.retry_after == 3.0
     assert err.rate_limit_limit == "40"
@@ -129,7 +135,7 @@ def test_rate_limit_details() -> None:
 
 def test_rate_limit_without_headers() -> None:
     with pytest.raises(RateLimitError) as info:
-        parse_response(httpx.Response(429, json={}), "GET", "/x")
+        parse(httpx.Response(429, json={}), "GET", "/x")
     assert info.value.retry_after is None
 
 

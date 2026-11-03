@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 
-from .._core import Request, check_limit, exactly_one, path
+from .._core import Request, check_limit, exactly_one, path, sub_account_path
 from ..types.transactions import (
     BankTransaction,
     BankTransactionPage,
@@ -13,12 +13,6 @@ from ..types.transactions import (
 from ._base import AsyncResource, SyncResource, aiterate_pages, iterate_pages
 
 
-def _accounts_path(sub_account_id: str | None) -> str:
-    if sub_account_id is None:
-        return "/v1/transactions/accounts"
-    return path("/v1/transactions/accounts/{}", sub_account_id)
-
-
 def _page_query(limit: int | None, cursor: str | None, date_from: str | None, date_to: str | None) -> dict[str, object]:
     return {"limit": check_limit(limit), "cursor": cursor, "dateFrom": date_from, "dateTo": date_to}
 
@@ -26,7 +20,11 @@ def _page_query(limit: int | None, cursor: str | None, date_from: str | None, da
 def _list(
     sub_account_id: str | None, limit: int | None, cursor: str | None, date_from: str | None, date_to: str | None
 ) -> Request[TransactionPage]:
-    return Request("GET", _accounts_path(sub_account_id), query=_page_query(limit, cursor, date_from, date_to))
+    return Request(
+        "GET",
+        sub_account_path("/v1/transactions/accounts{sub}", sub_account_id),
+        query=_page_query(limit, cursor, date_from, date_to),
+    )
 
 
 def _filter(
@@ -39,7 +37,7 @@ def _filter(
 ) -> Request[TransactionPage]:
     return Request(
         "POST",
-        _accounts_path(sub_account_id),
+        sub_account_path("/v1/transactions/accounts{sub}", sub_account_id),
         query=_page_query(limit, cursor, date_from, date_to),
         body=dict(filters),
     )
@@ -66,11 +64,7 @@ def _get(
         order_reference=order_reference,
         order_id=order_id,
     )
-    p = (
-        "/v1/transactions/accounts/single"
-        if sub_account_id is None
-        else path("/v1/transactions/accounts/{}/single", sub_account_id)
-    )
+    p = sub_account_path("/v1/transactions/accounts{sub}/single", sub_account_id)
     return Request("GET", p, query={_REF_KEYS[key]: value})
 
 

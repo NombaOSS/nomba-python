@@ -12,10 +12,11 @@ Official Python SDK for the Nomba API (`pip install nomba`, `from nomba import N
 ## Safety invariants
 - Only GET and token issue/refresh are retried automatically (`Request.retryable`). Never auto-retry POST/PUT/DELETE: money could move twice. The single 401 refresh-and-retry is the only exception.
 - Never log, `repr()` or put in an exception message the client secret, access/refresh tokens or the Authorization header. Error messages carry method and path only (no query, no headers).
-- Path parameters go through `_core.path()`: validated (no empty, `.`, `..`, `/`) and URL-encoded.
+- Path parameters go through `_core.path()` or `_core.sub_account_path()` (`{sub}` templates): validated (no empty, `.`, `..`, `/`) and URL-encoded.
+- Retry, 401 and auth behaviour are fields on `_core.Request` (`retryable` defaults to GET-only); token calls are ordinary `Request`s with `auth_endpoint=True`, whose error bodies drop `data`.
 - Money-moving calls (`transfers.to_bank/to_wallet`, `bills.*` purchases) generate a UUID v4 `merchantTxRef` if missing and return it; `checkout.charge_saved_card` does the same for `order.orderReference`.
 - Money-moving calls set `Request.reference`; `api_flow` adds it to the result and to every `NombaError` the call raises (`err.reference`). Don't bypass `api_flow`.
-- `timeout` is a total per-attempt deadline: the drivers stream the body and call `_core.check_deadline` between chunks, on top of httpx's per-phase timeouts.
+- `timeout` is a total per-attempt deadline: the drivers stream the body through `_core.BodyReader`, which checks the deadline after the headers and after each chunk, on top of httpx's per-phase timeouts.
 - Webhook verification uses an exact `hmac.compare_digest` (no case folding) on the raw body; never verify a re-serialised object.
 - Tests mock HTTP with `httpx.MockTransport`; never call Nomba from tests.
 - Every new sync method needs its async twin and a case in `tests/test_resources.py`.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 
-from .._core import Request, check_limit, path
+from .._core import Request, check_limit, path, sub_account_path
 from ..types.virtual_accounts import (
     CreateVirtualAccountParams,
     ExpireVirtualAccountResult,
@@ -16,8 +16,7 @@ from ._base import AsyncResource, SyncResource, aiterate_pages, iterate_pages
 
 
 def _create(params: CreateVirtualAccountParams, sub_account_id: str | None) -> Request[VirtualAccount]:
-    p = "/v1/accounts/virtual" if sub_account_id is None else path("/v1/accounts/virtual/{}", sub_account_id)
-    return Request("POST", p, body=dict(params))
+    return Request("POST", sub_account_path("/v1/accounts/virtual{sub}", sub_account_id), body=dict(params))
 
 
 def _get(identifier: str) -> Request[VirtualAccount]:

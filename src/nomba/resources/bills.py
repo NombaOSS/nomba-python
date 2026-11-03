@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._core import Request, path, require, validate_segment, with_reference
+from .._core import Request, path, require, sub_account_path, validate_segment, with_reference
 from ..types.bills import (
     AirtimeParams,
     BettingParams,
@@ -21,9 +21,7 @@ from ._base import AsyncResource, SyncResource
 
 def _purchase(product: str, params: Any, sub_account_id: str | None) -> Request[BillPurchase]:
     body, ref = with_reference(params)
-    base = f"/v2/bill/{product}"
-    p = base if sub_account_id is None else path(base + "/{}", sub_account_id)
-    return Request("POST", p, body=body, reference=ref)
+    return Request("POST", sub_account_path(f"/v2/bill/{product}{{sub}}", sub_account_id), body=body, reference=ref)
 
 
 def _list_data_plans(telco: str) -> Request[list[DataPlan]]:
