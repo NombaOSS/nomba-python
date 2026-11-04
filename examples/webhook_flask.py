@@ -21,7 +21,7 @@ SIGNING_KEY = os.environ["NOMBA_WEBHOOK_SIGNING_KEY"]
 def nomba_webhook() -> tuple[str, int]:
     try:
         # get_data() is the raw body. Don't use request.json and re-encode it.
-        event = verify_signature(request.get_data(), request.headers, SIGNING_KEY, tolerance_seconds=300)
+        event = verify_signature(request.get_data(), request.headers, SIGNING_KEY)
     except WebhookVerificationError:
         abort(401)
 

@@ -21,7 +21,7 @@ SIGNING_KEY = os.environ["NOMBA_WEBHOOK_SIGNING_KEY"]
 async def nomba_webhook(request: Request) -> dict[str, bool]:
     raw = await request.body()  # the raw bytes, exactly as Nomba sent them
     try:
-        event = verify_signature(raw, request.headers, SIGNING_KEY, tolerance_seconds=300)
+        event = verify_signature(raw, request.headers, SIGNING_KEY)
     except WebhookVerificationError:
         raise HTTPException(status_code=401) from None
 
