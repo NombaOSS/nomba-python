@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
+import nomba
 from nomba import AuthenticationError, InMemoryTokenStore, ServerError, Token
 from nomba._core import token_decision
 from nomba.tokens import parse_timestamp, token_from_response
@@ -44,7 +45,7 @@ def test_first_call_issues_token_then_reuses_it(api: MockAPI) -> None:
     assert call.headers["accountid"] == ACCOUNT_ID
     assert call.headers["accept"] == "application/json"
     assert call.headers["content-type"] == "application/json"
-    assert call.headers["user-agent"].startswith("nomba-python/0.1.1 python/")
+    assert call.headers["user-agent"].startswith(f"nomba-python/{nomba.__version__} python/")
     assert call.extensions["timeout"]["read"] == 30.0
 
 
