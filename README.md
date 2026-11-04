@@ -1,4 +1,9 @@
-# nomba-python
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NombaOSS/nomba-python/main/.github/assets/banner-dark.svg">
+  <img alt="Nomba Python SDK" src="https://raw.githubusercontent.com/NombaOSS/nomba-python/main/.github/assets/banner-light.svg" width="100%">
+</picture>
+
+# Nomba Python SDK
 
 Official Python SDK for the [Nomba API](https://developer.nomba.com): transfers, checkout, virtual accounts, bills, terminals, direct debits, global payouts and webhooks.
 
@@ -39,6 +44,16 @@ async with AsyncNomba() as nomba:
 ```
 
 Both clients work as context managers; otherwise call `close()` (sync) or `await aclose()` (async) when you're done. Every method returns the `data` field of Nomba's response envelope.
+
+## Building with an AI coding agent?
+
+Install the [Nomba agent skills](https://github.com/NombaOSS/skills) so Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI and other agents write Nomba integrations the safe way: idempotency references, requery on timeouts, refunds only when final, and webhook verification.
+
+```bash
+npx skills add NombaOSS/skills
+```
+
+In Claude Code you can also use `/plugin marketplace add NombaOSS/skills` and then `/plugin install nomba@nomba`.
 
 ## Configuration
 
