@@ -21,10 +21,16 @@ SIGNING_KEY = os.environ["NOMBA_WEBHOOK_SIGNING_KEY"]
 async def nomba_webhook(request: Request) -> dict[str, bool]:
     raw = await request.body()  # the raw bytes, exactly as Nomba sent them
     try:
-        event = verify_signature(raw, request.headers, SIGNING_KEY, tolerance_seconds=300)
+        event = verify_signature(raw, request.headers, SIGNING_KEY)
     except WebhookVerificationError:
         raise HTTPException(status_code=401) from None
 
-    if event["event_type"] in (WebhookEventType.PAYOUT_FAILED, WebhookEventType.PAYOUT_REFUND):
-        print("Payout needs attention:", event["data"]["transaction"].get("transactionId"))
+    ref = event["data"]["transaction"].get("merchantTxRef")
+    if event["event_type"] == WebhookEventType.PAYOUT_FAILED:
+        # Not final: Nomba may still retry the payout. Don't refund yet.
+        print("Payout failing, waiting:", ref)
+    elif event["event_type"] == WebhookEventType.PAYOUT_REFUND:
+        # Final: the money is back in your wallet. Refund your user once, after
+        # confirming with nomba.transactions.get(merchant_tx_ref=ref).
+        print("Payout refunded:", ref)
     return {"ok": True}
