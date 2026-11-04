@@ -27,6 +27,8 @@ def nomba_webhook() -> tuple[str, int]:
 
     if event["event_type"] == WebhookEventType.PAYMENT_SUCCESS:
         transaction = event["data"]["transaction"]
+        # The signature doesn't cover the amount or orderReference: before fulfilling,
+        # confirm with nomba.transactions.get(order_reference=...) and check the amount.
         print("Paid:", transaction.get("transactionId"), transaction.get("transactionAmount"))
     # Nomba retries webhooks that don't get a 2xx, so make handling idempotent
     # on event["requestId"].
