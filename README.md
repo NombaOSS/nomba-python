@@ -5,6 +5,9 @@
 
 # Nomba Python SDK
 
+> [!WARNING]
+> **This repository is archived and no longer maintained.** The official Python SDK is now developed at [NombaOSS/nomba-python-sdk](https://github.com/NombaOSS/nomba-python-sdk) and still published as [`nomba`](https://pypi.org/project/nomba/) on PyPI. From `nomba` 0.2.0 the package has a different API (sync only, Python 3.12+), so follow the new SDK's README when upgrading. To keep this SDK's API for now, pin `nomba<0.2`; it will receive no further updates or security fixes.
+
 Official Python SDK for the [Nomba API](https://developer.nomba.com): transfers, checkout, virtual accounts, bills, terminals, direct debits, global payouts and webhooks.
 
 [![CI](https://github.com/NombaOSS/nomba-python/actions/workflows/ci.yml/badge.svg)](https://github.com/NombaOSS/nomba-python/actions/workflows/ci.yml)
